@@ -1,0 +1,9 @@
+langchain-google-genai>=2.0.0
+langchain-core>=0.3.0
+langgraph>=0.2.0
+pydantic>=2.7.0
+python-dotenv>=1.0.1
+playwright>=1.49.0
+pymongo>=4.9.0
+cloudinary>=1.41.0
+requests>=2.32.0

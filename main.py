@@ -6,14 +6,54 @@ from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 from langchain_core.prompts import PromptTemplate
 from dotenv import load_dotenv
 from typing import TypedDict, List, Dict, Any, Annotated
-import operator
 import json
 import base64
 import os
 import re
+from urllib.parse import urlparse
+from uuid import uuid4
+import cloudinary
+import cloudinary.uploader
+import requests
 from scraper import run
+from mongo_store import MongoStore, MongoSettings
 
 load_dotenv()
+
+RUN_ID = os.getenv("PIPELINE_RUN_ID", uuid4().hex)
+
+
+def int_env(name: str, default: int) -> int:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+MONGO_URI = os.getenv("MONGODB_URI", "mongodb://localhost:27017")
+MONGO_DB_NAME = os.getenv("MONGODB_DB_NAME", "autoflow")
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
+GEMINI_TEXT_MODEL = os.getenv("GEMINI_TEXT_MODEL", "gemini-2.5-flash")
+GEMINI_IMAGE_MODEL = os.getenv("GEMINI_IMAGE_MODEL", "gemini-2.5-flash-image")
+ENABLE_IMAGE_GENERATION = os.getenv("ENABLE_IMAGE_GENERATION", "true").strip().lower() in {"1", "true", "yes", "y"}
+ENABLE_CLOUDINARY_UPLOAD = os.getenv("ENABLE_CLOUDINARY_UPLOAD", "true").strip().lower() in {"1", "true", "yes", "y"}
+ENABLE_INSTAGRAM_PUBLISH = os.getenv("ENABLE_INSTAGRAM_PUBLISH", "true").strip().lower() in {"1", "true", "yes", "y"}
+INSTAGRAM_MAX_POSTS = int_env("INSTAGRAM_MAX_POSTS", 1)
+
+CLOUDINARY_CLOUD_NAME = os.getenv("CLOUDINARY_CLOUD_NAME", "").strip()
+CLOUDINARY_API_KEY = os.getenv("CLOUDINARY_API_KEY", "").strip()
+CLOUDINARY_API_SECRET = os.getenv("CLOUDINARY_API_SECRET", "").strip()
+CLOUDINARY_UPLOAD_PRESET = os.getenv("CLOUDINARY_UPLOAD_PRESET", "").strip()
+CLOUDINARY_FOLDER = os.getenv("CLOUDINARY_FOLDER", "autoflow/generated").strip()
+INSTAGRAM_ACCESS_TOKEN = os.getenv("INSTAGRAM_ACCESS_TOKEN", "").strip()
+INSTAGRAM_IG_USER_ID = os.getenv("INSTAGRAM_IG_USER_ID", "").strip()
+INSTAGRAM_GRAPH_API_VERSION = os.getenv("INSTAGRAM_GRAPH_API_VERSION", "v25.0").strip() or "v25.0"
+
+mongo_store = MongoStore(MongoSettings(uri=MONGO_URI, db_name=MONGO_DB_NAME))
 
 
 # ─────────────────────────────────────────────
@@ -81,14 +121,15 @@ CATEGORY_THEMES = """
 # ─────────────────────────────────────────────
 
 llm = ChatGoogleGenerativeAI(
-    model="gemini-2.5-flash",
-    temperature=0.3
+    model=GEMINI_TEXT_MODEL,
+    temperature=0.3,
+    google_api_key=GOOGLE_API_KEY or None,
 )
 
 image_llm = ChatGoogleGenerativeAI(
-    model="gemini-2.5-flash-image",
+    model=GEMINI_IMAGE_MODEL,
     temperature=0.3,
-    google_api_key="AIzaSyDRCPu3r3sTKDcfh9kdlRBIolfkXJX0c2k"
+    google_api_key=GOOGLE_API_KEY or None,
 )
 
 
@@ -160,7 +201,7 @@ TOP SECTION:
 
 MIDDLE SECTION — KEY HIGHLIGHTS:
 Small section label: "KEY HIGHLIGHTS" in tiny accent-color uppercase letters.
-Extract the 4–5 most critical points from the content below and display as bullets:
+Extract the 4-5 most critical points from the content below and display as bullets:
 
 CONTENT:
 {content}
@@ -181,7 +222,7 @@ Bullet rules:
 BOTTOM BOX — ACTION STEPS:
 Dark semi-transparent rounded box (black at 20% opacity), clear padding inside.
 Label: "📋 WHAT YOU SHOULD DO NOW" in small accent-color uppercase.
-Numbered list (accent-color circle numbers), 3–4 steps extracted from the content.
+Numbered list (accent-color circle numbers), 3-4 steps extracted from the content.
 Each step: max 10 words, starts with a verb (Check / Visit / Download / Apply / Submit / Register).
 
 Below the box: accent-color outlined pill badge showing the most relevant official URL from:
@@ -214,6 +255,154 @@ image_prompt = PromptTemplate(
 
 
 # ─────────────────────────────────────────────
+# PERSISTENCE HELPERS
+# ─────────────────────────────────────────────
+
+def init_persistence() -> None:
+    try:
+        mongo_store.ensure_indexes()
+        print(f"[mongo] Connected: {MONGO_DB_NAME}")
+    except Exception as exc:
+        print(f"[mongo] WARNING: persistence unavailable - {exc}")
+
+
+def init_cloudinary() -> bool:
+    if not ENABLE_CLOUDINARY_UPLOAD:
+        print("[cloudinary] Upload disabled (ENABLE_CLOUDINARY_UPLOAD=false)")
+        return False
+    if not (CLOUDINARY_CLOUD_NAME and CLOUDINARY_API_KEY and CLOUDINARY_API_SECRET):
+        print("[cloudinary] Upload disabled (missing Cloudinary credentials)")
+        return False
+
+    cloudinary.config(
+        cloud_name=CLOUDINARY_CLOUD_NAME,
+        api_key=CLOUDINARY_API_KEY,
+        api_secret=CLOUDINARY_API_SECRET,
+        secure=True,
+    )
+    print(f"[cloudinary] Configured for cloud '{CLOUDINARY_CLOUD_NAME}'")
+    return True
+
+
+def persist_raw_news_items(raw_news: List[NewsItem]) -> None:
+    try:
+        mongo_store.upsert_raw_news(
+            [item.model_dump() for item in raw_news],
+            run_id=RUN_ID,
+        )
+    except Exception as exc:
+        print(f"[mongo] WARNING: raw_news persistence failed - {exc}")
+
+
+def persist_merged_news_items(merged_news: List[MergedNews]) -> None:
+    try:
+        mongo_store.upsert_merged_news(
+            [item.model_dump() for item in merged_news],
+            run_id=RUN_ID,
+        )
+    except Exception as exc:
+        print(f"[mongo] WARNING: merged_news persistence failed - {exc}")
+
+
+def persist_asset_item(
+    *,
+    category: str,
+    canonical_title: str,
+    local_path: str | None,
+    source_links: List[str],
+    status: str,
+) -> None:
+    try:
+        mongo_store.upsert_asset(
+            {
+                "category": category,
+                "canonical_title": canonical_title,
+                "local_path": local_path,
+                "source_links": source_links,
+                "status": status,
+            },
+            run_id=RUN_ID,
+        )
+        mongo_store.set_merged_status(
+            category=category,
+            canonical_title=canonical_title,
+            status="IMAGE_GENERATED" if status == "saved" else "IMAGE_FAILED",
+            run_id=RUN_ID,
+        )
+    except Exception as exc:
+        print(f"[mongo] WARNING: assets persistence failed - {exc}")
+
+
+def persist_asset_upload(
+    *,
+    category: str,
+    canonical_title: str,
+    cloudinary_url: str | None,
+    cloudinary_public_id: str | None,
+    status: str,
+) -> None:
+    try:
+        mongo_store.set_asset_upload(
+            category=category,
+            canonical_title=canonical_title,
+            cloudinary_url=cloudinary_url,
+            cloudinary_public_id=cloudinary_public_id,
+            status=status,
+            run_id=RUN_ID,
+        )
+        mongo_store.set_merged_status(
+            category=category,
+            canonical_title=canonical_title,
+            status="UPLOADED" if status == "UPLOADED" else "UPLOAD_FAILED",
+            run_id=RUN_ID,
+        )
+    except Exception as exc:
+        print(f"[mongo] WARNING: cloudinary persistence failed - {exc}")
+
+
+def persist_asset_instagram(
+    *,
+    category: str,
+    canonical_title: str,
+    caption: str | None,
+    instagram_creation_id: str | None,
+    instagram_media_id: str | None,
+    instagram_permalink: str | None,
+    status: str,
+    error: str | None,
+) -> None:
+    try:
+        mongo_store.set_asset_instagram(
+            category=category,
+            canonical_title=canonical_title,
+            caption=caption,
+            instagram_creation_id=instagram_creation_id,
+            instagram_media_id=instagram_media_id,
+            instagram_permalink=instagram_permalink,
+            status=status,
+            error=error,
+            run_id=RUN_ID,
+        )
+
+        if status == "INSTAGRAM_POSTED":
+            mongo_store.set_merged_status(
+                category=category,
+                canonical_title=canonical_title,
+                status="POSTED",
+                run_id=RUN_ID,
+            )
+        elif status == "INSTAGRAM_FAILED":
+            mongo_store.set_merged_status(
+                category=category,
+                canonical_title=canonical_title,
+                status="POST_FAILED",
+                run_id=RUN_ID,
+            )
+    except Exception as exc:
+        print(f"[mongo] WARNING: instagram persistence failed - {exc}")
+
+
+# ─────────────────────────────────────────────
 # NODES
 # ─────────────────────────────────────────────
 
@@ -227,6 +416,8 @@ def run_scraper(state: State) -> dict:
             content=item['content']
         )
         raw_news.append(news)
+
+    persist_raw_news_items(raw_news)
     return {"raw_news_items": raw_news}
 
 
@@ -243,6 +434,7 @@ def mergeNews(state: State) -> dict:
         HumanMessage(content=f"Raw Data: {raw_data_string}"),
     ])
 
+    persist_merged_news_items(result.news)
     return {'merged_news': result.news}
 
 
@@ -267,7 +459,6 @@ def save_base64_as_image(base64_str: str, title: str, folder: str = "output_imag
     safe_name = re.sub(r'[^a-z0-9]+', '_', title.lower()).strip('_')
     file_path = os.path.join(folder, f"{safe_name}.png")
 
-    # Strip data URI prefix if present
     if "," in base64_str:
         base64_str = base64_str.split(",")[1]
 
@@ -279,12 +470,156 @@ def save_base64_as_image(base64_str: str, title: str, folder: str = "output_imag
     return file_path
 
 
+def summarize_model_error(error: Exception) -> str:
+    message = str(error)
+    if "RESOURCE_EXHAUSTED" in message or "quota" in message.lower():
+        return "quota_exhausted: Gemini image quota exceeded. Enable billing or change model/key."
+    compact = re.sub(r"\s+", " ", message).strip()
+    return compact[:300]
+
+
+def summarize_cloudinary_error(error: Exception) -> str:
+    compact = re.sub(r"\s+", " ", str(error)).strip()
+    return compact[:300]
+
+
+def summarize_instagram_error(error: Exception) -> str:
+    compact = re.sub(r"\s+", " ", str(error)).strip()
+    return compact[:300]
+
+
+def init_instagram() -> bool:
+    if not ENABLE_INSTAGRAM_PUBLISH:
+        print("[instagram] Publish disabled (ENABLE_INSTAGRAM_PUBLISH=false)")
+        return False
+    if not INSTAGRAM_ACCESS_TOKEN or not INSTAGRAM_IG_USER_ID:
+        print("[instagram] Publish disabled (missing access token or IG user id)")
+        return False
+    print(f"[instagram] Configured for IG user '{INSTAGRAM_IG_USER_ID}'")
+    return True
+
+
+def _domain_only(url: str) -> str:
+    try:
+        domain = urlparse(url).netloc.lower()
+        if domain.startswith("www."):
+            domain = domain[4:]
+        return domain
+    except Exception:
+        return ""
+
+
+
+
+def _truncate_words(text: str, max_words: int) -> str:
+    words = text.split()
+    if len(words) <= max_words:
+        return text.strip()
+    return " ".join(words[:max_words]).strip() + "..."
+
+
+def build_instagram_caption(
+    *,
+    category: str,
+    title: str,
+    merged_content: str,
+    source_links: List[str],
+) -> str:
+    domain_parts = [_domain_only(link) for link in source_links]
+    domains = [d for d in domain_parts if d]
+    source_line = " | ".join(domains[:3])
+
+    hashtags_by_category = {
+        "RESULT DECLARED": "#ExamResults #StudentUpdate #EducationNews",
+        "ADMIT CARD": "#AdmitCard #ExamAlert #StudentUpdate",
+        "EXAM SCHEDULE": "#ExamSchedule #DateSheet #EducationNews",
+        "IMPORTANT NOTICE": "#ImportantNotice #StudentAlert #EducationNews",
+        "JOB OPENING": "#JobOpening #Recruitment #CareerUpdate",
+        "ANSWER KEY": "#AnswerKey #ExamUpdate #StudentAlert",
+        "MERIT LIST": "#MeritList #SelectionUpdate #EducationNews",
+        "SCHOLARSHIP": "#Scholarship #FinancialAid #StudentSupport",
+        "ADMISSION OPEN": "#AdmissionOpen #CollegeAdmission #EducationUpdate",
+        "DEADLINE ALERT": "#DeadlineAlert #ApplyNow #StudentNotice",
+    }
+
+    summary = _truncate_words(merged_content, 55)
+    hashtags = hashtags_by_category.get(category, "#EducationUpdate #StudentAlert #AutoFlow")
+
+    lines = [
+        f"{category}: {title}",
+        "",
+        summary,
+        "",
+        "Follow for daily education and job updates.",
+        hashtags,
+    ]
+    if source_line:
+        lines.extend(["", f"Sources: {source_line}"])
+
+    caption = "\n".join(lines).strip()
+    return caption[:2200]
+
+
+def _parse_graph_response(response: requests.Response) -> Dict[str, Any]:
+    try:
+        payload = response.json()
+    except ValueError:
+        text = response.text[:300]
+        raise RuntimeError(f"Graph API HTTP {response.status_code}: {text}")
+
+    if response.status_code >= 400 or "error" in payload:
+        err = payload.get("error", {})
+        message = err.get("message", "Unknown Graph API error")
+        code = err.get("code")
+        subcode = err.get("error_subcode")
+        err_type = err.get("type")
+        fbtrace = err.get("fbtrace_id")
+        raise RuntimeError(
+            f"Graph API error type={err_type} code={code} subcode={subcode} "
+            f"message={message} trace={fbtrace}"
+        )
+
+    return payload
+
+
+def graph_post(path: str, data: Dict[str, Any]) -> Dict[str, Any]:
+    url = f"https://graph.facebook.com/{INSTAGRAM_GRAPH_API_VERSION}/{path.lstrip('/')}"
+    payload = {**data, "access_token": INSTAGRAM_ACCESS_TOKEN}
+    response = requests.post(url, data=payload, timeout=60)
+    return _parse_graph_response(response)
+
+
+def graph_get(path: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    url = f"https://graph.facebook.com/{INSTAGRAM_GRAPH_API_VERSION}/{path.lstrip('/')}"
+    query = {**params, "access_token": INSTAGRAM_ACCESS_TOKEN}
+    response = requests.get(url, params=query, timeout=60)
+    return _parse_graph_response(response)
+
+
 # ─────────────────────────────────────────────
 # IMAGE GENERATION NODE
 # ─────────────────────────────────────────────
 
 def storeImages(state: State) -> dict:
     new_assets = {}
+
+    if not ENABLE_IMAGE_GENERATION:
+        print("[image] Skipped image generation (ENABLE_IMAGE_GENERATION=false)")
+        for item in state['merged_news']:
+            new_assets[item.canonical_title] = {
+                "category": item.category,
+                "local_path": None,
+                "sources": item.source_links,
+                "status": "skipped_image_generation"
+            }
+            persist_asset_item(
+                category=item.category,
+                canonical_title=item.canonical_title,
+                local_path=None,
+                source_links=item.source_links,
+                status="skipped_image_generation",
+            )
+        return {"generated_assets": new_assets}
 
     for item in state['merged_news']:
         print(f"\n🖼  Generating image for: [{item.category}] {item.canonical_title}")
@@ -302,7 +637,6 @@ def storeImages(state: State) -> dict:
             response = image_llm.invoke(formatted_image_prompt)
             base64_data = _get_image_base64(response)
 
-            # Use category + title slug as filename for uniqueness
             filename_key = f"{item.category}_{item.canonical_title}"
             path_on_disk = save_base64_as_image(base64_data, filename_key)
 
@@ -312,16 +646,269 @@ def storeImages(state: State) -> dict:
                 "sources": item.source_links,
                 "status": "saved"
             }
+            persist_asset_item(
+                category=item.category,
+                canonical_title=item.canonical_title,
+                local_path=path_on_disk,
+                source_links=item.source_links,
+                status="saved",
+            )
 
         except Exception as e:
-            print(f"  ✗ Failed for '{item.canonical_title}': {e}")
+            short_error = summarize_model_error(e)
+            print(f"  ✗ Failed for '{item.canonical_title}': {short_error}")
             new_assets[item.canonical_title] = {
                 "category": item.category,
                 "local_path": None,
-                "status": f"error: {str(e)}"
+                "status": f"error: {short_error}"
             }
+            persist_asset_item(
+                category=item.category,
+                canonical_title=item.canonical_title,
+                local_path=None,
+                source_links=item.source_links,
+                status=f"error: {short_error}",
+            )
 
     return {"generated_assets": new_assets}
+
+
+def uploadToCloudinary(state: State) -> dict:
+    uploaded_assets: Dict[str, Any] = {}
+    is_cloudinary_ready = init_cloudinary()
+
+    for title, asset in state.get("generated_assets", {}).items():
+        category = asset.get("category", "")
+        source_links = asset.get("sources", [])
+        local_path = asset.get("local_path")
+        status = str(asset.get("status", ""))
+
+        if not is_cloudinary_ready:
+            uploaded_assets[title] = {
+                **asset,
+                "cloudinary_url": None,
+                "cloudinary_public_id": None,
+                "status": "upload_skipped_cloudinary_not_configured",
+            }
+            persist_asset_upload(
+                category=category,
+                canonical_title=title,
+                cloudinary_url=None,
+                cloudinary_public_id=None,
+                status="UPLOAD_FAILED",
+            )
+            continue
+
+        if not local_path or status != "saved":
+            uploaded_assets[title] = {
+                **asset,
+                "cloudinary_url": None,
+                "cloudinary_public_id": None,
+                "status": "upload_skipped_no_local_asset",
+            }
+            persist_asset_upload(
+                category=category,
+                canonical_title=title,
+                cloudinary_url=None,
+                cloudinary_public_id=None,
+                status="UPLOAD_FAILED",
+            )
+            continue
+
+        try:
+            upload_kwargs: Dict[str, Any] = {
+                "folder": CLOUDINARY_FOLDER,
+            }
+            if CLOUDINARY_UPLOAD_PRESET:
+                upload_kwargs["upload_preset"] = CLOUDINARY_UPLOAD_PRESET
+
+            response = cloudinary.uploader.upload(local_path, **upload_kwargs)
+            cloudinary_url = response.get("secure_url")
+            cloudinary_public_id = response.get("public_id")
+
+            uploaded_assets[title] = {
+                **asset,
+                "source_links": source_links,
+                "cloudinary_url": cloudinary_url,
+                "cloudinary_public_id": cloudinary_public_id,
+                "status": "uploaded",
+            }
+            print(f"  ☁ Uploaded: {title} -> {cloudinary_public_id}")
+            persist_asset_upload(
+                category=category,
+                canonical_title=title,
+                cloudinary_url=cloudinary_url,
+                cloudinary_public_id=cloudinary_public_id,
+                status="UPLOADED",
+            )
+        except Exception as exc:
+            short_error = summarize_cloudinary_error(exc)
+            uploaded_assets[title] = {
+                **asset,
+                "cloudinary_url": None,
+                "cloudinary_public_id": None,
+                "status": f"upload_error: {short_error}",
+            }
+            print(f"  ☁ Upload failed for '{title}': {short_error}")
+            persist_asset_upload(
+                category=category,
+                canonical_title=title,
+                cloudinary_url=None,
+                cloudinary_public_id=None,
+                status="UPLOAD_FAILED",
+            )
+
+    return {"generated_assets": uploaded_assets}
+
+
+def publishToInstagram(state: State) -> dict:
+    posted_assets: Dict[str, Any] = {}
+    is_instagram_ready = init_instagram()
+    merged_lookup = {item.canonical_title: item for item in state.get("merged_news", [])}
+    posted_count = 0
+
+    for title, asset in state.get("generated_assets", {}).items():
+        category = str(asset.get("category", "")).strip()
+        cloudinary_url = str(asset.get("cloudinary_url") or "").strip()
+
+        if not is_instagram_ready:
+            posted_assets[title] = {
+                **asset,
+                "instagram_status": "skipped_not_configured",
+                "instagram_creation_id": None,
+                "instagram_media_id": None,
+                "instagram_permalink": None,
+            }
+            persist_asset_instagram(
+                category=category,
+                canonical_title=title,
+                caption=None,
+                instagram_creation_id=None,
+                instagram_media_id=None,
+                instagram_permalink=None,
+                status="INSTAGRAM_SKIPPED",
+                error="instagram_not_configured",
+            )
+            continue
+
+        if posted_count >= INSTAGRAM_MAX_POSTS:
+            posted_assets[title] = {
+                **asset,
+                "instagram_status": "skipped_max_posts_reached",
+                "instagram_creation_id": None,
+                "instagram_media_id": None,
+                "instagram_permalink": None,
+            }
+            persist_asset_instagram(
+                category=category,
+                canonical_title=title,
+                caption=None,
+                instagram_creation_id=None,
+                instagram_media_id=None,
+                instagram_permalink=None,
+                status="INSTAGRAM_SKIPPED",
+                error="instagram_max_posts_reached",
+            )
+            continue
+
+        if not cloudinary_url:
+            posted_assets[title] = {
+                **asset,
+                "instagram_status": "skipped_no_cloudinary_url",
+                "instagram_creation_id": None,
+                "instagram_media_id": None,
+                "instagram_permalink": None,
+            }
+            persist_asset_instagram(
+                category=category,
+                canonical_title=title,
+                caption=None,
+                instagram_creation_id=None,
+                instagram_media_id=None,
+                instagram_permalink=None,
+                status="INSTAGRAM_SKIPPED",
+                error="cloudinary_url_missing",
+            )
+            continue
+
+        merged_item = merged_lookup.get(title)
+        merged_content = merged_item.merged_content if merged_item else ""
+        source_links = merged_item.source_links if merged_item else list(asset.get("sources", []))
+        caption = build_instagram_caption(
+            category=category or "IMPORTANT NOTICE",
+            title=title,
+            merged_content=merged_content,
+            source_links=source_links,
+        )
+
+        try:
+            create_resp = graph_post(
+                f"{INSTAGRAM_IG_USER_ID}/media",
+                {
+                    "image_url": cloudinary_url,
+                    "caption": caption,
+                },
+            )
+            creation_id = create_resp.get("id")
+            if not creation_id:
+                raise RuntimeError("Missing creation id from /media response")
+
+            publish_resp = graph_post(
+                f"{INSTAGRAM_IG_USER_ID}/media_publish",
+                {"creation_id": creation_id},
+            )
+            media_id = publish_resp.get("id")
+            if not media_id:
+                raise RuntimeError("Missing media id from /media_publish response")
+
+            permalink = None
+            try:
+                media_details = graph_get(str(media_id), {"fields": "id,permalink"})
+                permalink = media_details.get("permalink")
+            except Exception as details_exc:
+                print(f"  [instagram] Could not fetch permalink for media {media_id}: {summarize_instagram_error(details_exc)}")
+
+            posted_count += 1
+            posted_assets[title] = {
+                **asset,
+                "instagram_status": "posted",
+                "instagram_creation_id": creation_id,
+                "instagram_media_id": media_id,
+                "instagram_permalink": permalink,
+            }
+            print(f"  📸 Instagram posted: {title} -> {media_id}")
+            persist_asset_instagram(
+                category=category,
+                canonical_title=title,
+                caption=caption,
+                instagram_creation_id=str(creation_id),
+                instagram_media_id=str(media_id),
+                instagram_permalink=permalink,
+                status="INSTAGRAM_POSTED",
+                error=None,
+            )
+        except Exception as exc:
+            short_error = summarize_instagram_error(exc)
+            print(f"  📸 Instagram publish failed for '{title}': {short_error}")
+            posted_assets[title] = {
+                **asset,
+                "instagram_status": f"failed: {short_error}",
+                "instagram_creation_id": None,
+                "instagram_media_id": None,
+                "instagram_permalink": None,
+            }
+            persist_asset_instagram(
+                category=category,
+                canonical_title=title,
+                caption=caption,
+                instagram_creation_id=None,
+                instagram_media_id=None,
+                instagram_permalink=None,
+                status="INSTAGRAM_FAILED",
+                error=short_error,
+            )
+
+    return {"generated_assets": posted_assets}
 
 
 # ─────────────────────────────────────────────
@@ -332,11 +919,15 @@ g = StateGraph(State)
 g.add_node('scraper', run_scraper)
 g.add_node('merger', mergeNews)
 g.add_node('store', storeImages)
+g.add_node('cloudinary', uploadToCloudinary)
+g.add_node('instagram', publishToInstagram)
 
 g.add_edge(START, 'scraper')
 g.add_edge('scraper', 'merger')
 g.add_edge('merger', 'store')
-g.add_edge('store', END)
+g.add_edge('store', 'cloudinary')
+g.add_edge('cloudinary', 'instagram')
+g.add_edge('instagram', END)
 
 app = g.compile()
 
@@ -346,34 +937,47 @@ app = g.compile()
 # ─────────────────────────────────────────────
 
 def run_app():
-    final_state = app.invoke({
-        "merged_news": [],
-        "raw_news_items": [],
-        "generated_assets": {}
-    })
+    init_persistence()
+    try:
+        final_state = app.invoke({
+            "merged_news": [],
+            "raw_news_items": [],
+            "generated_assets": {}
+        })
 
-    print("\n" + "="*50)
-    print("MERGED NEWS RESULTS")
-    print("="*50)
+        print("\n" + "="*50)
+        print("MERGED NEWS RESULTS")
+        print("="*50)
 
-    if not final_state.get("merged_news"):
-        print("No relevant news found.")
-        return
+        if not final_state.get("merged_news"):
+            print("No relevant news found.")
+            return
 
-    for i, news in enumerate(final_state["merged_news"], 1):
-        print(f"\n[{i}] CATEGORY : {news.category}")
-        print(f"    TITLE    : {news.canonical_title}")
-        print(f"    SUMMARY  : {news.merged_content[:120]}...")
-        print(f"    SOURCES  : {', '.join(news.source_links)}")
+        for i, news in enumerate(final_state["merged_news"], 1):
+            print(f"\n[{i}] CATEGORY : {news.category}")
+            print(f"    TITLE    : {news.canonical_title}")
+            print(f"    SUMMARY  : {news.merged_content[:120]}...")
+            print(f"    SOURCES  : {', '.join(news.source_links)}")
 
-    print("\n" + "="*50)
-    print("GENERATED ASSETS")
-    print("="*50)
+        print("\n" + "="*50)
+        print("GENERATED ASSETS")
+        print("="*50)
 
-    for title, asset in final_state.get("generated_assets", {}).items():
-        print(f"\n  [{asset['category']}] {title}")
-        print(f"  Status : {asset['status']}")
-        print(f"  Path   : {asset['local_path']}")
+        for title, asset in final_state.get("generated_assets", {}).items():
+            print(f"\n  [{asset['category']}] {title}")
+            print(f"  Status : {asset['status']}")
+            print(f"  Path   : {asset['local_path']}")
+            if asset.get("cloudinary_url"):
+                print(f"  URL    : {asset['cloudinary_url']}")
+                print(f"  PubID  : {asset.get('cloudinary_public_id')}")
+            if asset.get("instagram_status"):
+                print(f"  IG     : {asset.get('instagram_status')}")
+            if asset.get("instagram_media_id"):
+                print(f"  IG_ID  : {asset.get('instagram_media_id')}")
+            if asset.get("instagram_permalink"):
+                print(f"  IG_URL : {asset.get('instagram_permalink')}")
+    finally:
+        mongo_store.close()
 
 
 if __name__ == "__main__":

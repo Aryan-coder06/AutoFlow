@@ -1,5 +1,6 @@
 import time
 import random
+from urllib.parse import urlparse
 from playwright.sync_api import sync_playwright
 
 def stealth_sync(page):
@@ -56,7 +57,7 @@ def run():
         page.get_by_role("row").nth(1).wait_for()
 
         # Top 3 topics
-        for i in range(1):
+        for i in range(3):
             try:
                 current_row = page.get_by_role("row").nth(i + 1)
                 title_cell = current_row.get_by_role("gridcell").nth(1)
@@ -79,8 +80,24 @@ def run():
 
                 for link in links:
                     url = link.get_attribute("href")
-                    if url and "http" in url and "google.com" not in url:
-                        valid_urls.append(url)
+                    if not url or "http" not in url:
+                        continue
+
+                    netloc = urlparse(url).netloc.lower()
+                    blocked_domains = (
+                        "google.com",
+                        "about.google",
+                        "youtube.com",
+                        "youtu.be",
+                        "facebook.com",
+                        "instagram.com",
+                        "x.com",
+                        "twitter.com",
+                    )
+                    if any(domain in netloc for domain in blocked_domains):
+                        continue
+
+                    valid_urls.append(url)
 
                 valid_urls = list(set(valid_urls))
                 print(f"   Found {len(valid_urls)} articles.")

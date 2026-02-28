@@ -217,8 +217,8 @@ template = PromptTemplate(
     input_variables=['title', 'content', 'sources']
 )
 model = ChatGoogleGenerativeAI(
-    model="gemini-2.5-flash-image", 
-    google_api_key="AIzaSyDRCPu3r3sTKDcfh9kdlRBIolfkXJX0c2k"
+    model="gemini-2.5-flash-image",
+    google_api_key=os.getenv("GOOGLE_API_KEY")
 )
 # response = model.invoke(IMAGE_PROMPT)
 
