@@ -207,12 +207,12 @@ CONTENT:
 {content}
 
 Each bullet gets a colored circle icon on the left based on meaning:
-  ✓  Accent color circle → confirmed facts, key announcements
-  🌐 Sky blue circle     → website, portal, how to access
-  ⚠  Yellow circle       → warnings, delays, cautions
-  ✕  Red circle          → restrictions, not available
-  📅 White circle        → dates, deadlines, schedules
-  ↩  Mint circle         → next steps, what to do next
+  Accent color circle → confirmed facts, key announcements
+  Sky blue circle     → website, portal, how to access
+  Yellow circle       → warnings, delays, cautions
+  Red circle          → restrictions, not available
+  White circle        → dates, deadlines, schedules
+  Mint circle         → next steps, what to do next
 
 Bullet rules:
 - Rewrite each point in 10 words or fewer — never copy-paste
