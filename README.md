@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="logo.png" alt="AutoFlow.Studio Logo" width="140" />
+  <img src="https://private-user-images.githubusercontent.com/184762595/556569779-74b6e300-347f-4efc-a8f0-0129168043dd.png?jwt=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJnaXRodWIuY29tIiwiYXVkIjoicmF3LmdpdGh1YnVzZXJjb250ZW50LmNvbSIsImtleSI6ImtleTUiLCJleHAiOjE3NzIzNjUwMjgsIm5iZiI6MTc3MjM2NDcyOCwicGF0aCI6Ii8xODQ3NjI1OTUvNTU2NTY5Nzc5LTc0YjZlMzAwLTM0N2YtNGVmYy1hOGYwLTAxMjkxNjgwNDNkZC5wbmc_WC1BbXotQWxnb3JpdGhtPUFXUzQtSE1BQy1TSEEyNTYmWC1BbXotQ3JlZGVudGlhbD1BS0lBVkNPRFlMU0E1M1BRSzRaQSUyRjIwMjYwMzAxJTJGdXMtZWFzdC0xJTJGczMlMkZhd3M0X3JlcXVlc3QmWC1BbXotRGF0ZT0yMDI2MDMwMVQxMTMyMDhaJlgtQW16LUV4cGlyZXM9MzAwJlgtQW16LVNpZ25hdHVyZT04NjkzZjMyODJhNjliMjhmZjljOTJjN2RiMmU0ODZhYzZmY2E0ODgwYzQwNDRmNmQ1MzkxMDMyNGE5ODA1MGE1JlgtQW16LVNpZ25lZEhlYWRlcnM9aG9zdCJ9.iOBxuNl0sQSqPV6rKG5XWcypPpBjiSHJZDWOfZaYeYs" alt="AutoFlow.Studio Logo" width="140" />
 </p>
 <p align="center"><sub>Place your logo file at <code>logo.png</code> in the repo root.</sub></p>
 
