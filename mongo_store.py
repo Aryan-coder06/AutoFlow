@@ -59,6 +59,8 @@ class MongoStore:
         assets.create_index([("asset_hash", ASCENDING)], unique=True, name="uq_assets_hash")
         assets.create_index([("status", ASCENDING)], name="idx_assets_status")
         assets.create_index([("updated_at", DESCENDING)], name="idx_assets_updated_at")
+        assets.create_index([("instagram_media_id", ASCENDING)], name="idx_assets_instagram_media_id")
+        assets.create_index([("instagram_posted", ASCENDING)], name="idx_assets_instagram_posted")
 
     def upsert_raw_news(self, items: Iterable[Dict[str, str]], run_id: str) -> List[Dict[str, Any]]:
         col: Collection = self.db["raw_news"]
@@ -180,7 +182,10 @@ class MongoStore:
         col.update_one(
             {"asset_hash": asset_hash},
             {
-                "$setOnInsert": {"created_at": now},
+                "$setOnInsert": {
+                    "created_at": now,
+                    "instagram_posted": False,
+                },
                 "$set": doc,
             },
             upsert=True,
@@ -203,7 +208,10 @@ class MongoStore:
         col.update_one(
             {"asset_hash": asset_hash},
             {
-                "$setOnInsert": {"created_at": now},
+                "$setOnInsert": {
+                    "created_at": now,
+                    "instagram_posted": False,
+                },
                 "$set": {
                     "asset_hash": asset_hash,
                     "category": category,
@@ -234,23 +242,152 @@ class MongoStore:
         col: Collection = self.db["assets"]
         now = _utc_now()
         asset_hash = _hash_text(f"{category.lower()}|{canonical_title.lower()}")
+        is_posted = status == "INSTAGRAM_POSTED" or bool(instagram_media_id)
+        set_fields: Dict[str, Any] = {
+            "asset_hash": asset_hash,
+            "category": category,
+            "canonical_title": canonical_title,
+            "instagram_caption": caption,
+            "instagram_creation_id": instagram_creation_id,
+            "instagram_media_id": instagram_media_id,
+            "instagram_permalink": instagram_permalink,
+            "instagram_error": error,
+            "status": status,
+            "run_id": run_id,
+            "updated_at": now,
+        }
+        if is_posted:
+            set_fields["instagram_posted"] = True
+
         col.update_one(
             {"asset_hash": asset_hash},
             {
-                "$setOnInsert": {"created_at": now},
-                "$set": {
-                    "asset_hash": asset_hash,
-                    "category": category,
-                    "canonical_title": canonical_title,
-                    "instagram_caption": caption,
-                    "instagram_creation_id": instagram_creation_id,
-                    "instagram_media_id": instagram_media_id,
-                    "instagram_permalink": instagram_permalink,
-                    "instagram_error": error,
-                    "status": status,
-                    "run_id": run_id,
-                    "updated_at": now,
+                "$setOnInsert": {
+                    "created_at": now,
                 },
+                "$set": set_fields,
             },
             upsert=True,
         )
+
+    def get_recent_posted_news(self, limit: int = 200) -> List[Dict[str, Any]]:
+        col: Collection = self.db["merged_news"]
+        cursor = (
+            col.find(
+                {"status": "POSTED"},
+                {
+                    "_id": 0,
+                    "category": 1,
+                    "canonical_title": 1,
+                    "source_links": 1,
+                    "updated_at": 1,
+                },
+            )
+            .sort("updated_at", DESCENDING)
+            .limit(max(1, limit))
+        )
+        return list(cursor)
+
+    def get_recent_posted_assets(self, limit: int = 200) -> List[Dict[str, Any]]:
+        col: Collection = self.db["assets"]
+        cursor = (
+            col.find(
+                {
+                    "$or": [
+                        {"status": "INSTAGRAM_POSTED"},
+                        {"instagram_media_id": {"$exists": True, "$nin": [None, ""]}},
+                    ]
+                },
+                {
+                    "_id": 0,
+                    "category": 1,
+                    "canonical_title": 1,
+                    "source_links": 1,
+                    "updated_at": 1,
+                },
+            )
+            .sort("updated_at", DESCENDING)
+            .limit(max(1, limit))
+        )
+        return list(cursor)
+
+    def get_pending_uploaded_assets(self, limit: int = 200) -> List[Dict[str, Any]]:
+        col: Collection = self.db["assets"]
+        cursor = (
+            col.find(
+                {
+                    "cloudinary_url": {"$exists": True, "$type": "string", "$nin": ["", None]},
+                    "instagram_posted": {"$ne": True},
+                    "$and": [
+                        {"status": {"$ne": "INSTAGRAM_POSTED"}},
+                        {
+                            "$or": [
+                                {"instagram_media_id": {"$exists": False}},
+                                {"instagram_media_id": None},
+                                {"instagram_media_id": ""},
+                            ]
+                        },
+                    ],
+                },
+                {
+                    "_id": 0,
+                    "category": 1,
+                    "canonical_title": 1,
+                    "cloudinary_url": 1,
+                    "cloudinary_public_id": 1,
+                    "source_links": 1,
+                    "instagram_caption": 1,
+                    "updated_at": 1,
+                },
+            )
+            .sort("updated_at", DESCENDING)
+            .limit(max(1, limit))
+        )
+        return list(cursor)
+
+    def backfill_instagram_posted_flags(self) -> None:
+        col: Collection = self.db["assets"]
+        col.update_many(
+            {
+                "$or": [
+                    {"status": "INSTAGRAM_POSTED"},
+                    {"instagram_media_id": {"$exists": True, "$nin": [None, ""]}},
+                ]
+            },
+            {"$set": {"instagram_posted": True}},
+        )
+
+    def is_asset_posted(self, *, category: str, canonical_title: str) -> bool:
+        col: Collection = self.db["assets"]
+        asset_hash = _hash_text(f"{category.lower()}|{canonical_title.lower()}")
+        doc = col.find_one(
+            {
+                "asset_hash": asset_hash,
+                "$or": [
+                    {"status": "INSTAGRAM_POSTED"},
+                    {"instagram_media_id": {"$exists": True, "$nin": [None, ""]}},
+                ],
+            },
+            {"_id": 1},
+        )
+        return doc is not None
+
+    def get_asset(self, *, category: str, canonical_title: str) -> Dict[str, Any] | None:
+        col: Collection = self.db["assets"]
+        asset_hash = _hash_text(f"{category.lower()}|{canonical_title.lower()}")
+        doc = col.find_one(
+            {"asset_hash": asset_hash},
+            {
+                "_id": 0,
+                "category": 1,
+                "canonical_title": 1,
+                "local_path": 1,
+                "source_links": 1,
+                "status": 1,
+                "cloudinary_url": 1,
+                "cloudinary_public_id": 1,
+                "instagram_media_id": 1,
+                "instagram_permalink": 1,
+            },
+        )
+        return doc
