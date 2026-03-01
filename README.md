@@ -210,10 +210,7 @@ sequenceDiagram
 - Storage + delivery separation (local -> Cloudinary -> Instagram) improves recovery options.
 
 ## ⚠️ Cons
-
 - Dependent on third-party APIs (Gemini, Cloudinary, Instagram, Trends page structure).
-- Quota/rate limits can block generation/publishing in peak windows.
-- Scraping selectors can break if target site markup changes.
 - Caption/content quality still depends on source quality.
 - Requires careful credential hygiene.
 
