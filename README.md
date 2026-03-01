@@ -323,24 +323,20 @@ That makes it practical for teams, not just personal experiments.
 ## Upcoming Best Features (Roadmap)
 
 1. Multi-platform publishing (Telegram, LinkedIn, X, YouTube community).
-2. Editorial scoring layer (source confidence + urgency ranking).
-3. Auto-caption A/B variants with engagement tagging.
-4. Scheduled queue with calendar-based publishing windows.
-5. Topic-level performance analytics and feedback loop.
-6. Team roles and approval workflows (operator/editor/publisher).
-7. Moderation safeguards (content policy + sensitive topic filters).
-8. Retrieval layer for historical “similar notices” linking.
-9. Hybrid template engine (brand packs, locale packs, bilingual cards).
-10. API-first mode for agencies managing multiple client pages.
+2. Scheduled queue with calendar-based publishing windows.
+3. Topic-level performance analytics and feedback loop.
+4. Team roles and approval workflows (operator/editor/publisher).
+5. Moderation safeguards (content policy + sensitive topic filters).
+6. Retrieval layer for historical “similar notices” linking.
+7. Hybrid template engine (brand packs, locale packs, bilingual cards).
+8. API-first mode for agencies managing multiple client pages.
 
 ---
 
 ## Pricing and Access
 
 AutoFlow is **free to use currently** in its present codebase form.
-
 Operational costs are usage-dependent and come from external services:
-
 - LLM API usage
 - Cloudinary storage/transformations
 - Instagram platform constraints
