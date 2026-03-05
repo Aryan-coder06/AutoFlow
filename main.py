@@ -757,16 +757,16 @@ def build_instagram_caption(
     source_line = " | ".join(domains[:3])
 
     hashtags_by_category = {
-        "RESULT DECLARED": "#ExamResults #StudentUpdate #EducationNews #trending #contentcreator, #marketing, #branding, #influencer ",
-        "ADMIT CARD": "#AdmitCard #ExamAlert #StudentUpdate #trending #contentcreator, #marketing, #branding, #influencer ",
-        "EXAM SCHEDULE": "#ExamSchedule #DateSheet #EducationNews #trending #contentcreator, #marketing, #branding, #influencer ",
-        "IMPORTANT NOTICE": "#ImportantNotice #StudentAlert #EducationNews #trending #contentcreator, #marketing, #branding, #influencer ",
-        "JOB OPENING": "#JobOpening #Recruitment #CareerUpdate #trending #contentcreator, #marketing, #branding, #influencer ",
-        "ANSWER KEY": "#AnswerKey #ExamUpdate #StudentAlert #trending #contentcreator, #marketing, #branding, #influencer ",
-        "MERIT LIST": "#MeritList #SelectionUpdate #EducationNews #trending #contentcreator, #marketing, #branding, #influencer ",
-        "SCHOLARSHIP": "#Scholarship #FinancialAid #StudentSupport #trending #contentcreator, #marketing, #branding, #influencer ",
-        "ADMISSION OPEN": "#AdmissionOpen #CollegeAdmission #EducationUpdate #trending #contentcreator, #marketing, #branding, #influencer ",
-        "DEADLINE ALERT": "#DeadlineAlert #ApplyNow #StudentNotice #trending #contentcreator, #marketing, #branding, #influencer ",
+        "RESULT DECLARED": "#ExamResults #StudentUpdate #EducationNews #trending #contentcreator #marketing #branding  ",
+        "ADMIT CARD": "#AdmitCard #ExamAlert #StudentUpdate #trending #contentcreator #marketing #branding  ",
+        "EXAM SCHEDULE": "#ExamSchedule #DateSheet #EducationNews #trending #contentcreator #marketing #branding #influencer ",
+        "IMPORTANT NOTICE": "#ImportantNotice #StudentAlert #EducationNews #trending #contentcreator #marketing #branding  ",
+        "JOB OPENING": "#JobOpening #Recruitment #CareerUpdate #trending #contentcreator #marketing #branding  ",
+        "ANSWER KEY": "#AnswerKey #ExamUpdate #StudentAlert #trending #contentcreator #marketing #branding #influencer ",
+        "MERIT LIST": "#MeritList #SelectionUpdate #EducationNews #trending #contentcreator #marketing #branding  ",
+        "SCHOLARSHIP": "#Scholarship #FinancialAid #StudentSupport #trending #contentcreator #marketing #branding #influencer ",
+        "ADMISSION OPEN": "#AdmissionOpen #CollegeAdmission #EducationUpdate #trending #contentcreator #marketing #branding ",
+        "DEADLINE ALERT": "#DeadlineAlert #ApplyNow #StudentNotice #trending #contentcreator #marketing #branding  ",
     }
 
     summary = _truncate_words(merged_content, 55)
