@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://ibb.co/LdWnc7pW" alt="AutoFlow.Studio Logo" width="140" />
+  <img src="https://github.com/user-attachments/assets/8aa784da-c721-4ab5-9b71-1776e8d8b8aa" alt="AutoFlow.Studio Logo" width="140" />
 </p>
 
 
